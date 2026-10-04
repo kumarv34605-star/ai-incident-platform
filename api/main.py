@@ -1,5 +1,22 @@
+import mlflow
+import mlflow.sklearn
+import pandas as pd
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
+
+
+MODEL_NAME = "incident-classifier"
+MODEL_VERSION = "1"
+
+FEATURES = [
+    "cpu_usage",
+    "memory_usage",
+    "request_rate",
+    "latency_ms",
+    "error_rate",
+    "db_connections",
+    "http_5xx",
+]
 
 
 app = FastAPI(
@@ -19,6 +36,10 @@ class TelemetryRequest(BaseModel):
     http_5xx: float = Field(ge=0)
 
 
+model_uri = f"models:/{MODEL_NAME}/{MODEL_VERSION}"
+model = mlflow.sklearn.load_model(model_uri)
+
+
 @app.get("/health")
 def health_check():
     return {
@@ -29,7 +50,18 @@ def health_check():
 
 @app.post("/predict")
 def predict_incident(telemetry: TelemetryRequest):
+    telemetry_data = pd.DataFrame(
+        [telemetry.model_dump()],
+        columns=FEATURES,
+    )
+
+    prediction = model.predict(telemetry_data)[0]
+
     return {
-        "message": "Telemetry received successfully",
-        "telemetry": telemetry.model_dump(),
+        "incident": int(prediction),
+        "status": (
+            "incident_detected"
+            if prediction == 1
+            else "normal"
+        ),
     }
