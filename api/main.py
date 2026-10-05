@@ -1,8 +1,14 @@
+import logging
+
 import mlflow
 import mlflow.sklearn
 import pandas as pd
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 MODEL_NAME = "incident-classifier"
@@ -36,8 +42,20 @@ class TelemetryRequest(BaseModel):
     http_5xx: float = Field(ge=0)
 
 
+class PredictionResponse(BaseModel):
+    incident: int
+    status: str
+
+
 model_uri = f"models:/{MODEL_NAME}/{MODEL_VERSION}"
-model = mlflow.sklearn.load_model(model_uri)
+
+model = None
+
+try:
+    model = mlflow.sklearn.load_model(model_uri)
+    logger.info("ML model loaded successfully: %s", model_uri)
+except Exception:
+    logger.exception("Failed to load ML model: %s", model_uri)
 
 
 @app.get("/health")
@@ -48,14 +66,42 @@ def health_check():
     }
 
 
-@app.post("/predict")
+@app.get("/ready")
+def readiness_check():
+    if model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="ML model is not ready",
+        )
+
+    return {
+        "status": "ready",
+        "model": MODEL_NAME,
+        "version": MODEL_VERSION,
+    }
+
+
+@app.post("/predict", response_model=PredictionResponse)
 def predict_incident(telemetry: TelemetryRequest):
+    if model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="ML model is not ready",
+        )
+
     telemetry_data = pd.DataFrame(
         [telemetry.model_dump()],
         columns=FEATURES,
     )
 
-    prediction = model.predict(telemetry_data)[0]
+    try:
+        prediction = model.predict(telemetry_data)[0]
+    except Exception:
+        logger.exception("Model inference failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Model inference failed",
+        )
 
     return {
         "incident": int(prediction),
